@@ -34,9 +34,12 @@ import (
 	"vault_ssh/config"
 	"vault_ssh/log"
 	"vault_ssh/vault"
+	"path/filepath"
+	"io/ioutil"
 )
 
-const version = "0.0.3"
+const version = "0.0.8"
+const vault_token_file_name = "/.vault/vault_token"
 
 var versionFlag bool
 var testPassword bool
@@ -85,7 +88,25 @@ func Run(connectAs string, connectTo string, key string) {
 	target := connectAs + "@" + connectTo
 	log.Info("Connecting as " + target)
 
-	cmd := exec.Command("/usr/local/bin/sshpass", "-p", key, "ssh", "-t", "-t", target)
+	executable := "sshpass"
+	params := []string{
+		"-p", key, "ssh", "-o", "StrictHostKeyChecking=no", "-t", "-t", target,
+	}
+	log.Infof("Launching: %s %s", executable, strings.Join(params, " "))
+
+	if log.GetLevel() == log.DebugLevel {
+		for i, param := range params {
+			if param == "ssh" {
+				i = i + 1
+				// Yes: this is crazy, but this inserts an element into a slice
+				params = append(params[:i], append([]string{"-v"}, params[i:]...)...)
+				break
+			}
+		}
+	}
+
+	cmd := exec.Command(executable, params...)
+	cmd.Stderr = os.Stderr
 	cmd.Stdout = os.Stdout
 	cmd.Stdin = os.Stdin
 	err := cmd.Start()
@@ -115,6 +136,7 @@ func credentials() (username string, password string) {
 			username, _ = reader.ReadString('\n')
 		}
 	}
+	log.Info("Connecting with username: " + username)
 
 	if testPassword {
 		password = "password"
@@ -163,7 +185,7 @@ func main() {
 	}
 
 	config := config.New()
-	config.Url = "https://vault.service.consul:8200"
+	config.Url = "https://vault.service.consul.csdops.net:8200"
 	config.TlsSkipVerify = true
 	config.CaCert = certs.Ca
 	config.Cert = certs.Client_cert
@@ -178,17 +200,72 @@ func main() {
 		os.Exit(-1)
 	}
 
-	username, password := credentials()
-	log.Infof("Username: %s", username)
+	token := os.Getenv("VAULT_TOKEN")
+	if token == "" {
+		usr, _ := user.Current()
+		dir := usr.HomeDir
+		vault_token_file := filepath.Join(dir, vault_token_file_name)
 
-	token, err := vault.Login(vault_client, username, password)
-	if err != nil {
-		os.Exit(-1)
-	}
-	key, err := vault.Auth(vault_client, token, connectTo, "admin")
-	if err != nil {
-		os.Exit(-1)
-	}
+		if asUser == "" {
+			if _, err = os.Stat(vault_token_file); err == nil {
+				log.Debug("Found file: " + vault_token_file)
+				data, err := ioutil.ReadFile(vault_token_file)
+				if err != nil {
+					log.Error("Failed to read token from file. " + err.Error())
+				} else {
+					token = string(data)
+					log.Debug("Loaded token: " + token)
 
-	Run(connectAs, connectTo, key)
+					// Trying to re-use previously saved token
+					log.Info("Trying token from " + vault_token_file)
+					ttl, err := vault.CheckToken(vault_client, token)
+					if err != nil {
+						token = ""
+					}
+					if ttl != nil {
+						log.Infof("Token expires in %s", ttl.String())
+					}
+				}
+			} else {
+				log.Debug("Didn't find " + vault_token_file)
+			}
+		}
+		if token == "" {
+			log.Info("VAULT_TOKEN not set. Asking for credentials ...")
+
+			username, password := credentials()
+
+			token, err = vault.Login(vault_client, username, password)
+			if err != nil {
+				os.Exit(-1)
+			}
+			vault_dir := filepath.Dir(vault_token_file)
+			log.Debug("Checking presence of '" + vault_dir + "'")
+			err = nil
+			if _, err = os.Stat(vault_dir); err != nil {
+				log.Debug("Creating directory " + vault_dir)
+				err = os.MkdirAll(vault_dir, 0700)
+				if err != nil {
+					log.Error("Failed to create vault directory " + vault_token_file)
+				}
+			}
+			if err == nil {
+				log.Infof("Saving Vault token to " + vault_token_file)
+				ioutil.WriteFile(vault_token_file, []byte(token), 0644)
+			}
+			//else {
+			//	log.Error("Can't save token because directory doesn't exist: " + vault_dir)
+			//}
+		}
+	} else {
+		log.Info("Using token from VAULT_TOKEN environment variable")
+	}
+	if token != "" {
+		key, err := vault.RequestOTP(vault_client, connectTo, connectAs)
+		if err != nil {
+			os.Exit(-1)
+		}
+
+		Run(connectAs, connectTo, key)
+	}
 }

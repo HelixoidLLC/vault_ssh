@@ -31,6 +31,7 @@ import (
 	"net/http"
 	"vault_ssh/config"
 	"vault_ssh/log"
+	"time"
 )
 
 // TLSConfig is used to generate a TLSClientConfig that's useful for talking to
@@ -193,24 +194,50 @@ func Login(vault *vaultapi.Client, username string, password string) (string, er
 		return "", errors.New("Failed to write to vault")
 	}
 	log.Debugf("Got secret: %#v", secret)
+	log.Info("Preserve login token by setting: export VAULT_TOKEN=" + secret.Auth.ClientToken)
 	vault.SetToken(secret.Auth.ClientToken)
 	return secret.Auth.ClientToken, nil
 }
 
-func Auth(vault *vaultapi.Client, token string, ip string, username string) (key string, err error) {
+// RequestOTP is called to retreive a One-time-Password for SSH access
+func RequestOTP(vault *vaultapi.Client, ip string, username string) (key string, err error) {
 	data := map[string]interface{}{
 		"ip":       ip,
 		"username": username,
 	}
 	secret, err := vault.Logical().Write("ssh/creds/otp_key_role", data)
 	if err != nil {
+		log.Error("Make sure your VAULT_TOKEN didn't expire")
 		log.Fatalf("Failed to write to vault: %#v", err)
 		return "", errors.New("Failed to write to vault")
 	}
 	log.Debugf("Got secret: %#v", secret)
 	key_i := secret.Data["key"]
 	key = key_i.(string)
-	log.Infof("Token: %s", key)
-	log.Infof("Duration: %d", secret.LeaseDuration)
 	return key, nil
+}
+
+func CheckToken(vault *vaultapi.Client, token string) (*time.Duration, error) {
+	vault.SetToken(token)
+	secret, err := vault.Logical().Read("auth/token/lookup-self")
+	if err != nil {
+		log.Error("Failed to get information from Vault about specified token: " + token)
+		log.Error(err)
+		return nil, err
+	}
+	log.Debugf("Got secret: %#v", secret)
+	data := secret.Data
+	ttlStr := getStringFromMap(&data, "ttl", "")
+	log.Debug("TTL: " + ttlStr)
+	if ttlStr != "" {
+		ttl, err := time.ParseDuration(ttlStr + "s")
+		if err != nil {
+			log.Error("Failed to parse ttl")
+			return nil, err
+		}
+
+		return &ttl, nil
+	}
+
+	return nil, nil
 }
