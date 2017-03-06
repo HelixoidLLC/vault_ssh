@@ -38,14 +38,15 @@ import (
 	"io/ioutil"
 )
 
-const version = "0.0.8"
-const vault_token_file_name = "/.vault/vault_token"
+const version = "0.0.11"
+const vault_token_file_name = "/.vault-token"
 
 var versionFlag bool
 var testPassword bool
 var asUser string
 var withPassword string
 var passwdFromEnv bool
+var environment string
 
 func init() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
@@ -55,6 +56,7 @@ func init() {
 	flag.StringVar(&asUser, "username", "", "authenticate with Vault using this username")
 	flag.StringVar(&withPassword, "password", "", "don't prompt for password and use this one")
 	flag.BoolVar(&passwdFromEnv, "pwdenv", false, "read password from environment variable $VAULT_SSH_PWD")
+	flag.StringVar(&environment, "env", "dev", "ID of an environment (i.e.: dev, stg, prod) defaults to dev")
 	flag.Parse()
 }
 
@@ -169,6 +171,11 @@ func main() {
 		log.Error("Target to connect wasn't specified")
 		os.Exit(-1)
 	}
+	environments := map[string]interface{}{"dev": nil, "stg": nil, "prod": nil}
+	if _, ok := environments[environment]; !ok {
+		log.Errorf("Specified environment value '%s' is invalid.", environment)
+		os.Exit(-1)
+	}
 	connectTo := flag.Args()[0]
 	connectAs := ""
 	var err error
@@ -187,9 +194,9 @@ func main() {
 	config := config.New()
 	config.Url = "https://vault.service.consul.csdops.net:8200"
 	config.TlsSkipVerify = true
-	config.CaCert = certs.Ca
-	config.Cert = certs.Client_cert
-	config.CertKey = certs.Client_cert_key
+	config.CaCert = certs.Certs[environment+"_Ca"]
+	config.Cert = certs.Certs[environment+"_Client_cert"]
+	config.CertKey = certs.Certs[environment+"_Client_cert_key"]
 
 	log.Info("Starting vault_ssh v" + version)
 	log.Info("Connecting to Vault at: " + config.Url)
@@ -207,24 +214,20 @@ func main() {
 		vault_token_file := filepath.Join(dir, vault_token_file_name)
 
 		if asUser == "" {
-			if _, err = os.Stat(vault_token_file); err == nil {
-				log.Debug("Found file: " + vault_token_file)
-				data, err := ioutil.ReadFile(vault_token_file)
+			token, err = get_token(vault_token_file)
+			if err != nil {
+				log.Fatal("Failed to detect token")
+				os.Exit(-1)
+			}
+			if token != "" {
+				// Trying to re-use previously saved token
+				log.Info("Trying token from " + vault_token_file)
+				ttl, err := vault.CheckToken(vault_client, token)
 				if err != nil {
-					log.Error("Failed to read token from file. " + err.Error())
-				} else {
-					token = string(data)
-					log.Debug("Loaded token: " + token)
-
-					// Trying to re-use previously saved token
-					log.Info("Trying token from " + vault_token_file)
-					ttl, err := vault.CheckToken(vault_client, token)
-					if err != nil {
-						token = ""
-					}
-					if ttl != nil {
-						log.Infof("Token expires in %s", ttl.String())
-					}
+					token = ""
+				}
+				if ttl != nil {
+					log.Infof("Token expires in %s", ttl.String())
 				}
 			} else {
 				log.Debug("Didn't find " + vault_token_file)
@@ -239,23 +242,14 @@ func main() {
 			if err != nil {
 				os.Exit(-1)
 			}
-			vault_dir := filepath.Dir(vault_token_file)
-			log.Debug("Checking presence of '" + vault_dir + "'")
-			err = nil
-			if _, err = os.Stat(vault_dir); err != nil {
-				log.Debug("Creating directory " + vault_dir)
-				err = os.MkdirAll(vault_dir, 0700)
-				if err != nil {
-					log.Error("Failed to create vault directory " + vault_token_file)
-				}
-			}
+
 			if err == nil {
 				log.Infof("Saving Vault token to " + vault_token_file)
-				ioutil.WriteFile(vault_token_file, []byte(token), 0644)
+				err = ioutil.WriteFile(vault_token_file, []byte(token), 0644)
+				if err != nil {
+					log.Error("Failed to write token file: %s", err)
+				}
 			}
-			//else {
-			//	log.Error("Can't save token because directory doesn't exist: " + vault_dir)
-			//}
 		}
 	} else {
 		log.Info("Using token from VAULT_TOKEN environment variable")
@@ -268,4 +262,67 @@ func main() {
 
 		Run(connectAs, connectTo, key)
 	}
+}
+
+func get_token(vault_token_file string) (string, error) {
+	token := ""
+
+	usr, _ := user.Current()
+	dir := usr.HomeDir
+	old_vault_token_file := filepath.Join(dir, ".vault")
+	fi, err := os.Stat(old_vault_token_file)
+	if err == nil {
+		/*
+			if fi.Mode().IsDir() {
+				log.Warningf("Detected %s to be a directory. Removing ...", old_vault_token_file)
+				err := os.RemoveAll(old_vault_token_file)
+				if err != nil {
+					log.Errorf("Failed to remove folder %s", old_vault_token_file)
+					return "", err
+				}
+			} else {
+				log.Warningf("Detected %s to be a file. Removing ...", old_vault_token_file)
+				err := os.RemoveAll(old_vault_token_file)
+				if err != nil {
+					log.Errorf("Failed to remove folder %s", old_vault_token_file)
+					return "", err
+				}
+			}
+		*/
+		log.Warningf("Detected %s present. Removing ...", old_vault_token_file)
+		err := os.RemoveAll(old_vault_token_file)
+		if err != nil {
+			log.Errorf("Failed to remove %s", old_vault_token_file)
+			return "", err
+		}
+	}
+
+	fi, err = os.Stat(vault_token_file)
+	if err != nil {
+		// file doesn't exist
+		return "", nil
+	} else {
+		if fi.Mode().IsDir() {
+			log.Warningf("Detected %s to be a directory. Removing ...", vault_token_file)
+			err := os.RemoveAll(vault_token_file)
+			if err != nil {
+				log.Errorf("Failed to remove folder %s", vault_token_file)
+				return "", err
+			}
+		}
+	}
+
+	if _, err = os.Stat(vault_token_file); err == nil {
+		log.Debug("Found file: " + vault_token_file)
+		data, err := ioutil.ReadFile(vault_token_file)
+		if err != nil {
+			log.Error("Failed to read token from file. " + err.Error())
+			return "", err
+		} else {
+			token = string(data)
+			log.Debug("Loaded token: " + token)
+			return token, nil
+		}
+	}
+	return "", nil
 }

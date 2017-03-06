@@ -16,23 +16,59 @@
 
 package certs
 
-const Ca = `-----BEGIN CERTIFICATE-----
-...
- plug your cert here
-...
------END CERTIFICATE-----
-`
-
-const Client_cert = `-----BEGIN CERTIFICATE-----
-...
- plug your cert here
-...
------END CERTIFICATE-----
-`
-
-const Client_cert_key = `-----BEGIN RSA PRIVATE KEY-----
-...
- plug your cert here
-...
------END RSA PRIVATE KEY-----
-`
+var Certs = map[string]string{
+	"dev_Ca": `-----BEGIN CERTIFICATE-----
+	...
+	plug your cert here
+	...
+	-----END CERTIFICATE-----
+	`,
+		"dev_Client_cert": `-----BEGIN CERTIFICATE-----
+	...
+	plug your cert here
+	...
+	-----END CERTIFICATE-----
+	`,
+	"dev_Client_cert_key": `-----BEGIN CERTIFICATE-----
+	...
+	plug your cert here
+	...
+	-----END CERTIFICATE-----
+	`,
+	"stg_Ca": `-----BEGIN CERTIFICATE-----
+	...
+	plug your cert here
+	...
+	-----END CERTIFICATE-----
+	`,
+	"stg_Client_cert": `-----BEGIN CERTIFICATE-----
+	...
+	plug your cert here
+	...
+	-----END CERTIFICATE-----
+	`,
+	"stg_Client_cert_key": `-----BEGIN CERTIFICATE-----
+	...
+	plug your cert here
+	...
+	-----END CERTIFICATE-----
+	`,
+	"prod_Ca": `-----BEGIN CERTIFICATE-----
+	...
+	plug your cert here
+	...
+	-----END CERTIFICATE-----
+	`,
+	"prod_Client_cert": `-----BEGIN CERTIFICATE-----
+	...
+	plug your cert here
+	...
+	-----END CERTIFICATE-----
+	`,
+	"prod_Client_cert_key": `-----BEGIN CERTIFICATE-----
+	...
+	plug your cert here
+	...
+	-----END CERTIFICATE-----
+	`,
+}
